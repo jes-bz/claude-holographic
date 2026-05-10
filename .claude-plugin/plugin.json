@@ -1,0 +1,8 @@
+{
+  "name": "holographic-memory",
+  "description": "Persistent cross-session memory for Claude Code using Holographic Reduced Representations (HRR) and SQLite.",
+  "author": {
+    "name": "Jesse Brizzi",
+    "url": "https://github.com/jessebrizzi"
+  }
+}

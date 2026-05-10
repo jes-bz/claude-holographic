@@ -1,0 +1,20 @@
+{
+  "name": "holographic-memory-repo",
+  "interface": {
+    "displayName": "Holographic Memory"
+  },
+  "plugins": [
+    {
+      "name": "holographic-memory",
+      "source": {
+        "source": "local",
+        "path": "./plugins/holographic-memory"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
