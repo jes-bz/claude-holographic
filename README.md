@@ -26,7 +26,7 @@ Add to `~/.claude/settings.json`:
     "holographic-memory": {
       "source": {
         "source": "git",
-        "url": "https://github.com/jessebrizzi/claude-holographic.git"
+        "url": "https://github.com/jes-bz/claude-holographic.git"
       }
     }
   }
@@ -43,7 +43,7 @@ Then install in Claude Code:
 Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/jessebrizzi/claude-holographic.git
+git clone https://github.com/jes-bz/claude-holographic.git
 cd claude-holographic
 bash install.sh
 ```

@@ -4,10 +4,10 @@
   "description": "Persistent cross-session memory for Claude Code using Holographic Reduced Representations (HRR). Automatically injects relevant facts into every conversation and extracts memorable moments at session end.",
   "author": {
     "name": "Jesse Brizzi",
-    "url": "https://github.com/jessebrizzi"
+    "url": "https://github.com/jes-bz"
   },
-  "homepage": "https://github.com/jessebrizzi/claude-holographic",
-  "repository": "https://github.com/jessebrizzi/claude-holographic",
+  "homepage": "https://github.com/jes-bz/claude-holographic",
+  "repository": "https://github.com/jes-bz/claude-holographic",
   "license": "MIT",
   "keywords": ["memory", "persistence", "HRR", "sqlite", "productivity"],
   "hooks": "./hooks/hooks.json",
@@ -18,8 +18,8 @@
     "developerName": "Jesse Brizzi",
     "category": "Productivity",
     "capabilities": ["Memory", "Context"],
-    "websiteURL": "https://github.com/jessebrizzi/claude-holographic",
-    "privacyPolicyURL": "https://github.com/jessebrizzi/claude-holographic/blob/main/README.md",
-    "termsOfServiceURL": "https://github.com/jessebrizzi/claude-holographic/blob/main/LICENSE"
+    "websiteURL": "https://github.com/jes-bz/claude-holographic",
+    "privacyPolicyURL": "https://github.com/jes-bz/claude-holographic/blob/main/README.md",
+    "termsOfServiceURL": "https://github.com/jes-bz/claude-holographic/blob/main/LICENSE"
   }
 }
