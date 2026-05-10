@@ -11,7 +11,7 @@
       "name": "holographic-memory",
       "source": "./plugins/holographic-memory",
       "description": "Persistent cross-session memory using HRR and SQLite. Facts extracted each session, injected as context in future ones.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "author": {
         "name": "Jesse Brizzi",
         "url": "https://github.com/jes-bz"

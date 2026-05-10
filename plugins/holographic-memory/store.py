@@ -150,6 +150,7 @@ class MemoryStore:
             for name in self._extract_entities(content):
                 entity_id = self._resolve_entity(name)
                 self._link_fact_entity(fact_id, entity_id)
+            self._conn.commit()
 
             self._compute_hrr_vector(fact_id, content)
             self._rebuild_bank(category)
@@ -209,7 +210,7 @@ class MemoryStore:
     ) -> bool:
         with self._lock:
             row = self._conn.execute(
-                "SELECT fact_id, trust_score FROM facts WHERE fact_id = ?", (fact_id,)
+                "SELECT fact_id, trust_score, category FROM facts WHERE fact_id = ?", (fact_id,)
             ).fetchone()
             if row is None:
                 return False
@@ -240,10 +241,7 @@ class MemoryStore:
                     self._link_fact_entity(fact_id, entity_id)
                 self._conn.commit()
                 self._compute_hrr_vector(fact_id, content)
-            cat = category or self._conn.execute(
-                "SELECT category FROM facts WHERE fact_id = ?", (fact_id,)
-            ).fetchone()["category"]
-            self._rebuild_bank(cat)
+            self._rebuild_bank(category or row["category"])
             return True
 
     def remove_fact(self, fact_id: int) -> bool:
@@ -314,6 +312,14 @@ class MemoryStore:
                 "helpful_count": row["helpful_count"] + helpful_increment,
             }
 
+    def stats(self) -> tuple[int, list[tuple[str, int]]]:
+        """Returns (total_count, [(category, count), ...]) for top 5 categories."""
+        count = self._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+        cats = self._conn.execute(
+            "SELECT category, COUNT(*) as n FROM facts GROUP BY category ORDER BY n DESC LIMIT 5"
+        ).fetchall()
+        return count, [(row["category"], row["n"]) for row in cats]
+
     def _extract_entities(self, text: str) -> list[str]:
         seen: set[str] = set()
         candidates: list[str] = []
@@ -348,7 +354,6 @@ class MemoryStore:
         if alias_row is not None:
             return int(alias_row["entity_id"])
         cur = self._conn.execute("INSERT INTO entities (name) VALUES (?)", (name,))
-        self._conn.commit()
         return int(cur.lastrowid)  # type: ignore[return-value]
 
     def _link_fact_entity(self, fact_id: int, entity_id: int) -> None:
@@ -356,7 +361,6 @@ class MemoryStore:
             "INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) VALUES (?, ?)",
             (fact_id, entity_id),
         )
-        self._conn.commit()
 
     def _compute_hrr_vector(self, fact_id: int, content: str) -> None:
         with self._lock:

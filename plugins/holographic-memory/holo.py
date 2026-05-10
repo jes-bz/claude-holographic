@@ -22,7 +22,6 @@ WATERMARK_DIR = Path.home() / ".claude" / "holographic-memory" / "watermarks"
 
 def _get_store():
     from store import MemoryStore
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     return MemoryStore(db_path=DB_PATH)
 
 
@@ -38,18 +37,14 @@ def cmd_startup():
         return
 
     try:
-        count = store._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
-
+        count, cats = store.stats()
         if count == 0:
             print(
                 "Holographic memory active. "
                 "No facts stored yet — memories will be collected automatically."
             )
         else:
-            cats = store._conn.execute(
-                "SELECT category, COUNT(*) as n FROM facts GROUP BY category ORDER BY n DESC LIMIT 5"
-            ).fetchall()
-            cat_str = ", ".join(f"{r[0]}:{r[1]}" for r in cats)
+            cat_str = ", ".join(f"{cat}:{n}" for cat, n in cats)
             print(
                 f"Holographic memory: {count} facts ({cat_str}). "
                 "Relevant facts injected with each message."
@@ -86,20 +81,27 @@ def cmd_inject():
         retriever = FactRetriever(store)
         results = retriever.search(prompt, min_trust=0.3, limit=6)
 
-        if not results:
-            return
-
-        lines = ["## Memory"]
-        for r in results:
-            trust = r.get("trust_score", 0.5)
-            content = r.get("content", "")
-            cat = r.get("category", "general")
-            cat_tag = f"[{cat}] " if cat != "general" else ""
-            lines.append(f"- [{trust:.1f}] {cat_tag}{content}")
-
         n = len(results)
-        print(f"🧠 {n} {'memory' if n == 1 else 'memories'} retrieved", file=sys.stderr)
-        print("\n".join(lines))
+        context_message = ""
+
+        if results:
+            lines = ["## Memory"]
+            for r in results:
+                trust = r.get("trust_score", 0.5)
+                content = r.get("content", "")
+                cat = r.get("category", "general")
+                cat_tag = f"[{cat}] " if cat != "general" else ""
+                lines.append(f"- [{trust:.1f}] {cat_tag}{content}")
+            context_message = "\n".join(lines)
+
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": context_message,
+            },
+            "systemMessage": f"🧠 holographic: {n} {'memory' if n == 1 else 'memories'} recalled",
+        }
+        json.dump(output, sys.stdout)
     finally:
         store.close()
 
@@ -177,50 +179,45 @@ def _extract_with_claude(messages: list[dict]) -> list[tuple[str, str]]:
         return []
 
 
-# Regex fallback — used when ANTHROPIC_API_KEY is absent or API call fails
-_REGEX_RULES: list[tuple[re.Pattern, str]] = [
-    (re.compile(r'\bremember\s+(?:that\s+)?.{10,200}', re.I), "general"),
-    (re.compile(r'\bnote\s+(?:that\s+)?.{10,200}', re.I), "general"),
-    (re.compile(r'\bI(?:\'m| am)\s+(?:a|an)\s+\w.{5,80}', re.I), "user_pref"),
-    (re.compile(r'\bmy name is\s+\w.{2,40}', re.I), "user_pref"),
-    (re.compile(r'\bI work (?:at|for|with|on)\s+\w.{3,80}', re.I), "user_pref"),
-    (re.compile(r'\bI\s+(?:prefer|like|love|use|hate|always use|never use)\s+\w.{5,120}', re.I), "user_pref"),
-    (re.compile(r'\bI\s+(?:always|never|usually|typically)\s+\w.{5,100}', re.I), "user_pref"),
-    (re.compile(r'\bplease\s+(?:always|never|don\'t|do)\s+\w.{5,100}', re.I), "user_pref"),
-    (re.compile(r'\bwe\s+(?:decided|agreed|chose|are using|switched to|will use)\s+\w.{5,100}', re.I), "project"),
-    (re.compile(r'\bwe\'re\s+(?:using|building|working on|migrating to)\s+\w.{5,100}', re.I), "project"),
-    (re.compile(r'\bthis\s+(?:project|repo|app|service|codebase)\s+(?:uses?|needs?|is built with)\s+\w.{5,80}', re.I), "project"),
-    (re.compile(r'\bour\s+(?:stack|setup|architecture|framework)\s+(?:is|uses?)\s+\w.{5,80}', re.I), "project"),
-    (re.compile(r'\bdon\'t use\s+\w.{3,60}[,;]\s+(?:use|try)\s+\w.{3,60}', re.I), "user_pref"),
-]
-
-_ASSISTANT_REGEX_RULES: list[tuple[re.Pattern, str]] = [
-    (re.compile(r'\bI\'ll (?:remember|note|keep in mind)\s+(?:that\s+)?\w.{10,200}', re.I), "general"),
-]
+# Regex fallback — used when claude CLI is unavailable
+_REGEX_RULES: dict[str, list[tuple[re.Pattern, str]]] = {
+    "user": [
+        (re.compile(r'\bremember\s+(?:that\s+)?.{10,200}', re.I), "general"),
+        (re.compile(r'\bnote\s+(?:that\s+)?.{10,200}', re.I), "general"),
+        (re.compile(r'\bI(?:\'m| am)\s+(?:a|an)\s+\w.{5,80}', re.I), "user_pref"),
+        (re.compile(r'\bmy name is\s+\w.{2,40}', re.I), "user_pref"),
+        (re.compile(r'\bI work (?:at|for|with|on)\s+\w.{3,80}', re.I), "user_pref"),
+        (re.compile(r'\bI\s+(?:prefer|like|love|use|hate|always use|never use)\s+\w.{5,120}', re.I), "user_pref"),
+        (re.compile(r'\bI\s+(?:always|never|usually|typically)\s+\w.{5,100}', re.I), "user_pref"),
+        (re.compile(r'\bplease\s+(?:always|never|don\'t|do)\s+\w.{5,100}', re.I), "user_pref"),
+        (re.compile(r'\bwe\s+(?:decided|agreed|chose|are using|switched to|will use)\s+\w.{5,100}', re.I), "project"),
+        (re.compile(r'\bwe\'re\s+(?:using|building|working on|migrating to)\s+\w.{5,100}', re.I), "project"),
+        (re.compile(r'\bthis\s+(?:project|repo|app|service|codebase)\s+(?:uses?|needs?|is built with)\s+\w.{5,80}', re.I), "project"),
+        (re.compile(r'\bour\s+(?:stack|setup|architecture|framework)\s+(?:is|uses?)\s+\w.{5,80}', re.I), "project"),
+        (re.compile(r'\bdon\'t use\s+\w.{3,60}[,;]\s+(?:use|try)\s+\w.{3,60}', re.I), "user_pref"),
+    ],
+    "assistant": [
+        (re.compile(r'\bI\'ll (?:remember|note|keep in mind)\s+(?:that\s+)?\w.{10,200}', re.I), "general"),
+    ],
+}
 
 
 def _extract_with_regex(messages: list[dict]) -> list[tuple[str, str]]:
     results: list[tuple[str, str]] = []
     seen: set[str] = set()
 
-    def _add(text: str, category: str) -> None:
-        text = text.strip()
-        if len(text) < _MIN_FACT_LENGTH:
-            return
-        key = text.lower()[:100]
-        if key not in seen:
-            seen.add(key)
-            results.append((text[:_MAX_FACT_LENGTH], category))
-
     for msg in messages:
         role = msg.get("role", "")
         content = msg.get("content", "")
         if not content or len(content) < _MIN_FACT_LENGTH:
             continue
-        rules = _REGEX_RULES if role == "user" else _ASSISTANT_REGEX_RULES
-        for pattern, category in rules:
+        for pattern, category in _REGEX_RULES.get(role, []):
             if pattern.search(content):
-                _add(content, category)
+                text = content.strip()
+                key = text.lower()[:100]
+                if key not in seen:
+                    seen.add(key)
+                    results.append((text[:_MAX_FACT_LENGTH], category))
                 break
 
     return results
@@ -313,19 +310,20 @@ def cmd_collect():
 
     saved = 0
     if facts_to_store:
+        store = None
         try:
             store = _get_store()
-            try:
-                for content, category in facts_to_store:
-                    try:
-                        store.add_fact(content, category=category)
-                        saved += 1
-                    except Exception:
-                        pass
-            finally:
-                store.close()
+            for content, category in facts_to_store:
+                try:
+                    store.add_fact(content, category=category)
+                    saved += 1
+                except Exception:
+                    pass
         except Exception:
             pass
+        finally:
+            if store is not None:
+                store.close()
 
     if saved:
         print(f"💾 {saved} new {'fact' if saved == 1 else 'facts'} saved", file=sys.stderr)

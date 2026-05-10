@@ -58,13 +58,14 @@ def similarity(a: list[float], b: list[float]) -> float:
     return sum(math.cos(x - y) for x, y in zip(a, b)) / n
 
 
+def tokenize(text: str) -> list[str]:
+    """Split text into lowercase tokens, stripping punctuation."""
+    return [t for t in (w.strip(".,!?;:\"'()[]{}#@<>") for w in text.lower().split()) if t]
+
+
 def encode_text(text: str, dim: int = 1024) -> list[float]:
     """Bag-of-words: bundle of atom vectors for each token."""
-    tokens = [
-        token.strip(".,!?;:\"'()[]{}")
-        for token in text.lower().split()
-    ]
-    tokens = [t for t in tokens if t]
+    tokens = tokenize(text)
     if not tokens:
         return encode_atom("__hrr_empty__", dim)
     return bundle(*[encode_atom(token, dim) for token in tokens])

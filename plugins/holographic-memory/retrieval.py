@@ -42,6 +42,7 @@ class FactRetriever:
             return []
 
         query_tokens = self._tokenize(query)
+        query_vec = hrr.encode_text(query, self.hrr_dim) if self.hrr_weight > 0 else None
         scored = []
 
         for fact in candidates:
@@ -52,9 +53,8 @@ class FactRetriever:
             jaccard = self._jaccard_similarity(query_tokens, all_tokens)
             fts_score = fact.get("fts_rank", 0.0)
 
-            if self.hrr_weight > 0 and fact.get("hrr_vector"):
+            if query_vec is not None and fact.get("hrr_vector"):
                 fact_vec = hrr.bytes_to_phases(fact["hrr_vector"])
-                query_vec = hrr.encode_text(query, self.hrr_dim)
                 hrr_sim = (hrr.similarity(query_vec, fact_vec) + 1.0) / 2.0
             else:
                 hrr_sim = 0.5
@@ -72,8 +72,7 @@ class FactRetriever:
             fact["score"] = score
             scored.append(fact)
 
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        results = scored[:limit]
+        results = self._top_n(scored, limit)
         for fact in results:
             fact.pop("hrr_vector", None)
         return results
@@ -100,37 +99,21 @@ class FactRetriever:
                 extracted = hrr.unbind(bank_vec, probe_key)
                 return self._score_facts_by_vector(extracted, category=category, limit=limit)
 
-        where = "WHERE hrr_vector IS NOT NULL"
-        params: list = []
-        if category:
-            where += " AND category = ?"
-            params.append(category)
-
-        rows = conn.execute(
-            f"""
-            SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at, hrr_vector
-            FROM facts {where}
-            """,
-            params,
-        ).fetchall()
-
+        rows = self._fetch_hrr_rows(category)
         if not rows:
             return self.search(entity, category=category, limit=limit)
 
+        role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
         scored = []
         for row in rows:
-            fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact, fact_vec = self._pop_vector(row)
             residual = hrr.unbind(fact_vec, probe_key)
-            role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
             content_vec = hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)
             sim = hrr.similarity(residual, content_vec)
             fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
             scored.append(fact)
 
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        return self._top_n(scored, limit)
 
     def related(
         self,
@@ -139,33 +122,16 @@ class FactRetriever:
         limit: int = 10,
     ) -> list[dict]:
         """Discover facts with structural connections to an entity."""
-        conn = self.store._conn
-        entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
-
-        where = "WHERE hrr_vector IS NOT NULL"
-        params: list = []
-        if category:
-            where += " AND category = ?"
-            params.append(category)
-
-        rows = conn.execute(
-            f"""
-            SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at, hrr_vector
-            FROM facts {where}
-            """,
-            params,
-        ).fetchall()
-
+        rows = self._fetch_hrr_rows(category)
         if not rows:
             return self.search(entity, category=category, limit=limit)
 
+        entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
         role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
         scored = []
         for row in rows:
-            fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact, fact_vec = self._pop_vector(row)
             residual = hrr.unbind(fact_vec, entity_vec)
             entity_role_sim = hrr.similarity(residual, role_entity)
             content_role_sim = hrr.similarity(residual, role_content)
@@ -173,8 +139,7 @@ class FactRetriever:
             fact["score"] = (best_sim + 1.0) / 2.0 * fact["trust_score"]
             scored.append(fact)
 
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        return self._top_n(scored, limit)
 
     def reason(
         self,
@@ -184,50 +149,31 @@ class FactRetriever:
     ) -> list[dict]:
         """Multi-entity compositional query — AND semantics via vector-space JOIN."""
         if not entities:
-            return self.search(" ".join(entities), category=category, limit=limit)
+            return []
 
-        conn = self.store._conn
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
-        entity_residuals = []
-        for entity in entities:
-            entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
-            probe_key = hrr.bind(entity_vec, role_entity)
-            entity_residuals.append(probe_key)
+        entity_residuals = [
+            hrr.bind(hrr.encode_atom(e.lower(), self.hrr_dim), role_entity)
+            for e in entities
+        ]
 
-        where = "WHERE hrr_vector IS NOT NULL"
-        params: list = []
-        if category:
-            where += " AND category = ?"
-            params.append(category)
-
-        rows = conn.execute(
-            f"""
-            SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at, hrr_vector
-            FROM facts {where}
-            """,
-            params,
-        ).fetchall()
-
+        rows = self._fetch_hrr_rows(category)
         if not rows:
             return self.search(" ".join(entities), category=category, limit=limit)
 
         role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
         scored = []
         for row in rows:
-            fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
-            entity_scores = []
-            for probe_key in entity_residuals:
-                residual = hrr.unbind(fact_vec, probe_key)
-                sim = hrr.similarity(residual, role_content)
-                entity_scores.append(sim)
+            fact, fact_vec = self._pop_vector(row)
+            entity_scores = [
+                hrr.similarity(hrr.unbind(fact_vec, probe_key), role_content)
+                for probe_key in entity_residuals
+            ]
             min_sim = min(entity_scores)
             fact["score"] = (min_sim + 1.0) / 2.0 * fact["trust_score"]
             scored.append(fact)
 
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+        return self._top_n(scored, limit)
 
     def contradict(
         self,
@@ -307,31 +253,47 @@ class FactRetriever:
 
     def _score_facts_by_vector(
         self,
-        target_vec: "np.ndarray",
+        target_vec: list[float],
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        conn = self.store._conn
-        where = "WHERE hrr_vector IS NOT NULL"
-        params: list = []
-        if category:
-            where += " AND category = ?"
-            params.append(category)
-        rows = conn.execute(
-            f"""
-            SELECT fact_id, content, category, tags, trust_score,
-                   retrieval_count, helpful_count, created_at, updated_at, hrr_vector
-            FROM facts {where}
-            """,
-            params,
-        ).fetchall()
+        rows = self._fetch_hrr_rows(category)
         scored = []
         for row in rows:
-            fact = dict(row)
-            fact_vec = hrr.bytes_to_phases(fact.pop("hrr_vector"))
+            fact, fact_vec = self._pop_vector(row)
             sim = hrr.similarity(target_vec, fact_vec)
             fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
             scored.append(fact)
+        return self._top_n(scored, limit)
+
+    def _fetch_hrr_rows(self, category: str | None) -> list:
+        """Fetch all facts with HRR vectors, optionally filtered by category."""
+        conn = self.store._conn
+        if category:
+            return conn.execute(
+                """
+                SELECT fact_id, content, category, tags, trust_score,
+                       retrieval_count, helpful_count, created_at, updated_at, hrr_vector
+                FROM facts WHERE hrr_vector IS NOT NULL AND category = ?
+                """,
+                (category,),
+            ).fetchall()
+        return conn.execute(
+            """
+            SELECT fact_id, content, category, tags, trust_score,
+                   retrieval_count, helpful_count, created_at, updated_at, hrr_vector
+            FROM facts WHERE hrr_vector IS NOT NULL
+            """
+        ).fetchall()
+
+    @staticmethod
+    def _pop_vector(row: object) -> tuple[dict, list[float]]:
+        """Convert a DB row to (fact_dict, hrr_vector), removing the raw bytes from the dict."""
+        fact = dict(row)  # type: ignore[call-overload]
+        return fact, hrr.bytes_to_phases(fact.pop("hrr_vector"))
+
+    @staticmethod
+    def _top_n(scored: list[dict], limit: int) -> list[dict]:
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
 
@@ -367,26 +329,19 @@ class FactRetriever:
             return []
         if not rows:
             return []
-        raw_ranks = [abs(row["fts_rank_raw"]) for row in rows]
-        max_rank = max(max(raw_ranks), 1e-6)
+        max_rank = max((abs(row["fts_rank_raw"]) for row in rows), default=1e-6)
+        max_rank = max(max_rank, 1e-6)
         results = []
-        for row, raw_rank in zip(rows, raw_ranks):
+        for row in rows:
             fact = dict(row)
-            fact.pop("fts_rank_raw", None)
+            raw_rank = abs(fact.pop("fts_rank_raw"))
             fact["fts_rank"] = raw_rank / max_rank
             results.append(fact)
         return results
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        if not text:
-            return set()
-        tokens = set()
-        for word in text.lower().split():
-            cleaned = word.strip(".,;:!?\"'()[]{}#@<>")
-            if cleaned:
-                tokens.add(cleaned)
-        return tokens
+        return set(hrr.tokenize(text))
 
     @staticmethod
     def _jaccard_similarity(set_a: set, set_b: set) -> float:
