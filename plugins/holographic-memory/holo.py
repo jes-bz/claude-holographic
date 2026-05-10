@@ -103,6 +103,8 @@ def cmd_inject():
             cat_tag = f"[{cat}] " if cat != "general" else ""
             lines.append(f"- [{trust:.1f}] {cat_tag}{content}")
 
+        n = len(results)
+        print(f"🧠 {n} {'memory' if n == 1 else 'memories'} retrieved", file=sys.stderr)
         print("\n".join(lines))
     finally:
         store.close()
@@ -315,6 +317,7 @@ def cmd_collect():
 
     facts_to_store = _extract_with_claude(messages) or _extract_with_regex(messages)
 
+    saved = 0
     if facts_to_store:
         try:
             store = _get_store()
@@ -322,12 +325,16 @@ def cmd_collect():
                 for content, category in facts_to_store:
                     try:
                         store.add_fact(content, category=category)
+                        saved += 1
                     except Exception:
                         pass
             finally:
                 store.close()
         except Exception:
             pass
+
+    if saved:
+        print(f"💾 {saved} new {'fact' if saved == 1 else 'facts'} saved", file=sys.stderr)
 
     # Update watermark
     try:
