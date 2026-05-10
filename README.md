@@ -25,8 +25,8 @@ Add to `~/.claude/settings.json`:
   "extraKnownMarketplaces": {
     "holographic-memory": {
       "source": {
-        "source": "git",
-        "url": "https://github.com/jes-bz/claude-holographic.git"
+        "source": "github",
+        "repo": "jes-bz/claude-holographic"
       }
     }
   }
@@ -39,8 +39,6 @@ Then install in Claude Code:
 ```
 
 ### Manual install
-
-Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/jes-bz/claude-holographic.git
@@ -58,14 +56,14 @@ bash install.sh
 
 Search uses a hybrid pipeline:
 1. **FTS5** — SQLite full-text search, fast keyword matching
-2. **Jaccard similarity** — token overlap reranking  
+2. **Jaccard similarity** — token overlap reranking
 3. **HRR vectors** — phase-encoded semantic similarity (requires numpy, auto-installed by uv)
 
 Facts have trust scores (0–1) that adjust with use. Higher-trust facts rank higher in retrieval.
 
 ## Requirements
 
-- [uv](https://docs.astral.sh/uv/) — for Python 3.11+ and numpy auto-install
+- Python 3.9+ — stdlib only, no third-party packages
 - `claude` CLI — for smart fact extraction (comes with Claude Code)
 
 ## Architecture

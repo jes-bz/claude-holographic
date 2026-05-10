@@ -25,12 +25,6 @@ class FactRetriever:
         self.store = store
         self.half_life = temporal_decay_half_life
         self.hrr_dim = hrr_dim
-
-        if hrr_weight > 0 and not hrr._HAS_NUMPY:
-            fts_weight = 0.6
-            jaccard_weight = 0.4
-            hrr_weight = 0.0
-
         self.fts_weight = fts_weight
         self.jaccard_weight = jaccard_weight
         self.hrr_weight = hrr_weight
@@ -90,10 +84,7 @@ class FactRetriever:
         category: str | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Compositional entity query using HRR algebra. Falls back to search if numpy unavailable."""
-        if not hrr._HAS_NUMPY:
-            return self.search(entity, category=category, limit=limit)
-
+        """Compositional entity query using HRR algebra."""
         conn = self.store._conn
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
         entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
@@ -148,9 +139,6 @@ class FactRetriever:
         limit: int = 10,
     ) -> list[dict]:
         """Discover facts with structural connections to an entity."""
-        if not hrr._HAS_NUMPY:
-            return self.search(entity, category=category, limit=limit)
-
         conn = self.store._conn
         entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
 
@@ -195,7 +183,7 @@ class FactRetriever:
         limit: int = 10,
     ) -> list[dict]:
         """Multi-entity compositional query — AND semantics via vector-space JOIN."""
-        if not hrr._HAS_NUMPY or not entities:
+        if not entities:
             return self.search(" ".join(entities), category=category, limit=limit)
 
         conn = self.store._conn
@@ -248,9 +236,6 @@ class FactRetriever:
         limit: int = 10,
     ) -> list[dict]:
         """Find potentially contradictory facts: high entity overlap + low content similarity."""
-        if not hrr._HAS_NUMPY:
-            return []
-
         conn = self.store._conn
         where = "WHERE f.hrr_vector IS NOT NULL"
         params: list = []

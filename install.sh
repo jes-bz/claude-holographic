@@ -4,7 +4,7 @@
 #
 # Alternative: add to ~/.claude/settings.json extraKnownMarketplaces and install via Claude Code:
 #   "extraKnownMarketplaces": {
-#     "holographic-memory": { "source": { "source": "git", "url": "https://github.com/jessebrizzi/claude-holographic.git" } }
+#     "holographic-memory": { "source": { "source": "github", "repo": "jes-bz/claude-holographic" } }
 #   }
 
 set -euo pipefail
@@ -74,6 +74,6 @@ PYEOF
 
 echo ""
 echo "Testing..."
-uv run "$PLUGIN_DIR/holo.py" startup
+python3 "$PLUGIN_DIR/holo.py" startup
 echo ""
 echo "Done. Restart Claude Code to activate."

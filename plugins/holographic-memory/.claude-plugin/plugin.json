@@ -1,0 +1,14 @@
+{
+  "name": "holographic-memory",
+  "version": "1.0.0",
+  "description": "Persistent cross-session memory using Holographic Reduced Representations (HRR) and SQLite.",
+  "author": {
+    "name": "Jesse Brizzi",
+    "url": "https://github.com/jes-bz"
+  },
+  "homepage": "https://github.com/jes-bz/claude-holographic",
+  "repository": "https://github.com/jes-bz/claude-holographic",
+  "license": "MIT",
+  "keywords": ["memory", "persistence", "hrr", "sqlite", "semantic-search"],
+  "hooks": "./hooks/hooks.json"
+}

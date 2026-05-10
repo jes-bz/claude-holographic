@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "holographic-memory",
+  "owner": {
+    "name": "Jesse Brizzi",
+    "email": "jessebrizzi@gmail.com"
+  },
+  "description": "Persistent cross-session memory for Claude Code using Holographic Reduced Representations (HRR) and SQLite.",
+  "plugins": [
+    {
+      "name": "holographic-memory",
+      "source": "./plugins/holographic-memory",
+      "description": "Persistent cross-session memory using HRR and SQLite. Facts extracted each session, injected as context in future ones.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Jesse Brizzi",
+        "url": "https://github.com/jes-bz"
+      },
+      "homepage": "https://github.com/jes-bz/claude-holographic",
+      "repository": "https://github.com/jes-bz/claude-holographic",
+      "license": "MIT",
+      "keywords": ["memory", "persistence", "hrr", "sqlite", "semantic-search"]
+    }
+  ]
+}

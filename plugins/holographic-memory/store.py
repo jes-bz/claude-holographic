@@ -104,7 +104,6 @@ class MemoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim
-        self._hrr_available = hrr._HAS_NUMPY
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
@@ -361,8 +360,6 @@ class MemoryStore:
 
     def _compute_hrr_vector(self, fact_id: int, content: str) -> None:
         with self._lock:
-            if not self._hrr_available:
-                return
             rows = self._conn.execute(
                 """
                 SELECT e.name FROM entities e
@@ -381,8 +378,6 @@ class MemoryStore:
 
     def _rebuild_bank(self, category: str) -> None:
         with self._lock:
-            if not self._hrr_available:
-                return
             bank_name = f"cat:{category}"
             rows = self._conn.execute(
                 "SELECT hrr_vector FROM facts WHERE category = ? AND hrr_vector IS NOT NULL",
@@ -411,8 +406,6 @@ class MemoryStore:
 
     def rebuild_all_vectors(self, dim: int | None = None) -> int:
         with self._lock:
-            if not self._hrr_available:
-                return 0
             if dim is not None:
                 self.hrr_dim = dim
             rows = self._conn.execute("SELECT fact_id, content, category FROM facts").fetchall()

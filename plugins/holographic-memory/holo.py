@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["numpy"]
-# ///
 """
 Holographic memory CLI for Claude Code hooks.
 
@@ -43,12 +39,10 @@ def cmd_startup():
 
     try:
         count = store._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
-        import holographic as hrr
-        hrr_status = "HRR+FTS5" if hrr._HAS_NUMPY else "FTS5 only (install numpy for HRR)"
 
         if count == 0:
             print(
-                f"Holographic memory active ({hrr_status}). "
+                "Holographic memory active. "
                 "No facts stored yet — memories will be collected automatically."
             )
         else:
@@ -57,7 +51,7 @@ def cmd_startup():
             ).fetchall()
             cat_str = ", ".join(f"{r[0]}:{r[1]}" for r in cats)
             print(
-                f"Holographic memory: {count} facts ({cat_str}) | {hrr_status}. "
+                f"Holographic memory: {count} facts ({cat_str}). "
                 "Relevant facts injected with each message."
             )
     finally:
@@ -161,7 +155,7 @@ def _extract_with_claude(messages: list[dict]) -> list[tuple[str, str]]:
 
     try:
         result = subprocess.run(
-            ["claude", "--output-format", "text", "--model", "claude-haiku-4-5-20251001"],
+            ["claude", "--output-format", "text", "--model", "claude-haiku-4-5"],
             input=prompt,
             capture_output=True,
             text=True,
