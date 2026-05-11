@@ -21,6 +21,7 @@ class FactRetriever:
         jaccard_weight: float = 0.3,
         hrr_weight: float = 0.3,
         hrr_dim: int = 1024,
+        project_boost: float = 1.25,
     ):
         self.store = store
         self.half_life = temporal_decay_half_life
@@ -28,6 +29,7 @@ class FactRetriever:
         self.fts_weight = fts_weight
         self.jaccard_weight = jaccard_weight
         self.hrr_weight = hrr_weight
+        self.project_boost = project_boost
 
     def search(
         self,
@@ -35,14 +37,21 @@ class FactRetriever:
         category: str | None = None,
         min_trust: float = 0.3,
         limit: int = 10,
+        current_project: str | None = None,
     ) -> list[dict]:
-        """Hybrid search: FTS5 candidates → Jaccard rerank → HRR → trust weighting."""
+        """Hybrid search: FTS5 candidates → Jaccard rerank → HRR → trust + project boost."""
         candidates = self._fts_candidates(query, category, min_trust, limit * 3)
         if not candidates:
             return []
 
         query_tokens = self._tokenize(query)
-        query_vec = hrr.encode_text(query, self.hrr_dim) if self.hrr_weight > 0 else None
+        # Bind query to role_content so HRR similarity targets the bound content
+        # component of fact_vec (= bundle(content⊗role_c, entity⊗role_e, ...))
+        if self.hrr_weight > 0:
+            role_content = hrr.encode_atom("__hrr_role_content__", self.hrr_dim)
+            query_vec = hrr.bind(hrr.encode_text(query, self.hrr_dim), role_content)
+        else:
+            query_vec = None
         scored = []
 
         for fact in candidates:
@@ -64,6 +73,10 @@ class FactRetriever:
                 + self.jaccard_weight * jaccard
                 + self.hrr_weight * hrr_sim
             )
+
+            if current_project and fact.get("project_path") == current_project:
+                relevance *= self.project_boost
+
             score = relevance * fact["trust_score"]
 
             if self.half_life > 0:
@@ -73,9 +86,23 @@ class FactRetriever:
             scored.append(fact)
 
         results = self._top_n(scored, limit)
+        self._bump_retrieval_counts([r["fact_id"] for r in results])
         for fact in results:
             fact.pop("hrr_vector", None)
         return results
+
+    def _bump_retrieval_counts(self, fact_ids: list[int]) -> None:
+        if not fact_ids:
+            return
+        placeholders = ",".join("?" * len(fact_ids))
+        try:
+            self.store._conn.execute(
+                f"UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            )
+            self.store._conn.commit()
+        except Exception:
+            pass
 
     def probe(
         self,
@@ -84,20 +111,9 @@ class FactRetriever:
         limit: int = 10,
     ) -> list[dict]:
         """Compositional entity query using HRR algebra."""
-        conn = self.store._conn
         role_entity = hrr.encode_atom("__hrr_role_entity__", self.hrr_dim)
         entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
         probe_key = hrr.bind(entity_vec, role_entity)
-
-        if category:
-            bank_name = f"cat:{category}"
-            bank_row = conn.execute(
-                "SELECT vector FROM memory_banks WHERE bank_name = ?", (bank_name,)
-            ).fetchone()
-            if bank_row:
-                bank_vec = hrr.bytes_to_phases(bank_row["vector"])
-                extracted = hrr.unbind(bank_vec, probe_key)
-                return self._score_facts_by_vector(extracted, category=category, limit=limit)
 
         rows = self._fetch_hrr_rows(category)
         if not rows:
@@ -222,19 +238,23 @@ class FactRetriever:
         facts = [dict(r) for r in rows]
         contradictions = []
 
+        vectors = {f["fact_id"]: hrr.bytes_to_phases(f["hrr_vector"]) for f in facts}
+
         for i in range(len(facts)):
+            f1 = facts[i]
+            ents1 = fact_entities.get(f1["fact_id"], set())
+            if not ents1:
+                continue
+            v1 = vectors[f1["fact_id"]]
             for j in range(i + 1, len(facts)):
-                f1, f2 = facts[i], facts[j]
-                ents1 = fact_entities.get(f1["fact_id"], set())
+                f2 = facts[j]
                 ents2 = fact_entities.get(f2["fact_id"], set())
-                if not ents1 or not ents2:
+                if not ents2:
                     continue
-                entity_overlap = len(ents1 & ents2) / len(ents1 | ents2) if (ents1 | ents2) else 0.0
+                entity_overlap = len(ents1 & ents2) / len(ents1 | ents2)
                 if entity_overlap < 0.3:
                     continue
-                v1 = hrr.bytes_to_phases(f1["hrr_vector"])
-                v2 = hrr.bytes_to_phases(f2["hrr_vector"])
-                content_sim = hrr.similarity(v1, v2)
+                content_sim = hrr.similarity(v1, vectors[f2["fact_id"]])
                 contradiction_score = entity_overlap * (1.0 - (content_sim + 1.0) / 2.0)
                 if contradiction_score >= threshold:
                     f1_clean = {k: v for k, v in f1.items() if k != "hrr_vector"}
@@ -250,21 +270,6 @@ class FactRetriever:
 
         contradictions.sort(key=lambda x: x["contradiction_score"], reverse=True)
         return contradictions[:limit]
-
-    def _score_facts_by_vector(
-        self,
-        target_vec: list[float],
-        category: str | None = None,
-        limit: int = 10,
-    ) -> list[dict]:
-        rows = self._fetch_hrr_rows(category)
-        scored = []
-        for row in rows:
-            fact, fact_vec = self._pop_vector(row)
-            sim = hrr.similarity(target_vec, fact_vec)
-            fact["score"] = (sim + 1.0) / 2.0 * fact["trust_score"]
-            scored.append(fact)
-        return self._top_n(scored, limit)
 
     def _fetch_hrr_rows(self, category: str | None) -> list:
         """Fetch all facts with HRR vectors, optionally filtered by category."""
@@ -315,11 +320,11 @@ class FactRetriever:
         params.append(min_trust)
         where_sql = " AND ".join(where_clauses)
         sql = f"""
-            SELECT f.*, facts_fts.rank as fts_rank_raw
+            SELECT f.*, bm25(facts_fts, 2.0, 1.0) as fts_rank_raw
             FROM facts_fts
             JOIN facts f ON f.fact_id = facts_fts.rowid
             WHERE {where_sql}
-            ORDER BY facts_fts.rank
+            ORDER BY bm25(facts_fts, 2.0, 1.0)
             LIMIT ?
         """
         params.append(limit)
@@ -329,8 +334,7 @@ class FactRetriever:
             return []
         if not rows:
             return []
-        max_rank = max((abs(row["fts_rank_raw"]) for row in rows), default=1e-6)
-        max_rank = max(max_rank, 1e-6)
+        max_rank = max(max(abs(row["fts_rank_raw"]) for row in rows), 1e-6)
         results = []
         for row in rows:
             fact = dict(row)

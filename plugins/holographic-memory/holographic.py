@@ -58,9 +58,23 @@ def similarity(a: list[float], b: list[float]) -> float:
     return sum(math.cos(x - y) for x, y in zip(a, b)) / n
 
 
+_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "should",
+    "could", "may", "might", "must", "can", "of", "in", "on", "at", "to",
+    "for", "with", "by", "from", "as", "and", "or", "but", "if", "then",
+    "this", "that", "these", "those", "it", "its", "i", "you", "we",
+    "they", "he", "she", "my", "your", "our", "their", "his", "her", "me",
+    "us", "them", "so", "not", "no", "yes",
+})
+
+
 def tokenize(text: str) -> list[str]:
-    """Split text into lowercase tokens, stripping punctuation."""
-    return [t for t in (w.strip(".,!?;:\"'()[]{}#@<>") for w in text.lower().split()) if t]
+    """Split text into lowercase tokens, stripping punctuation and stopwords."""
+    return [
+        t for t in (w.strip(".,!?;:\"'()[]{}#@<>") for w in text.lower().split())
+        if t and t not in _STOPWORDS
+    ]
 
 
 def encode_text(text: str, dim: int = 1024) -> list[float]:

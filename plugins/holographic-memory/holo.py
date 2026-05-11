@@ -9,6 +9,7 @@ Commands:
 """
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -25,11 +26,33 @@ def _get_store():
     return MemoryStore(db_path=DB_PATH)
 
 
+def _read_hook_input() -> dict:
+    """Parse hook stdin JSON. Returns {} on failure."""
+    try:
+        return json.load(sys.stdin)
+    except Exception:
+        return {}
+
+
+def _project_path(data: dict) -> str:
+    """Resolve current project path from hook input or env. Returns realpath or ''."""
+    cwd = data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or ""
+    if not cwd:
+        return ""
+    try:
+        return os.path.realpath(cwd)
+    except Exception:
+        return cwd
+
+
 # ---------------------------------------------------------------------------
 # startup — SessionStart hook
 # ---------------------------------------------------------------------------
 
 def cmd_startup():
+    data = _read_hook_input()
+    project = _project_path(data)
+
     try:
         store = _get_store()
     except Exception as e:
@@ -45,8 +68,13 @@ def cmd_startup():
             )
         else:
             cat_str = ", ".join(f"{cat}:{n}" for cat, n in cats)
+            project_suffix = ""
+            if project:
+                project_count = store.project_count(project)
+                if project_count:
+                    project_suffix = f", {project_count} in this project"
             print(
-                f"Holographic memory: {count} facts ({cat_str}). "
+                f"Holographic memory: {count} facts ({cat_str}{project_suffix}). "
                 "Relevant facts injected with each message."
             )
     finally:
@@ -61,25 +89,22 @@ def cmd_inject():
     if not DB_PATH.exists():
         return
 
-    try:
-        data = json.load(sys.stdin)
-        prompt = (data.get("prompt") or "").strip()
-    except Exception:
-        return
+    data = _read_hook_input()
+    prompt = (data.get("prompt") or "").strip()
+    project = _project_path(data)
 
-    if not prompt or len(prompt) < 3:
+    if len(prompt) < 3:
         return
 
     try:
-        from store import MemoryStore
         from retrieval import FactRetriever
-        store = MemoryStore(db_path=DB_PATH)
+        store = _get_store()
     except Exception:
         return
 
     try:
         retriever = FactRetriever(store)
-        results = retriever.search(prompt, min_trust=0.3, limit=6)
+        results = retriever.search(prompt, min_trust=0.3, limit=6, current_project=project)
 
         n = len(results)
         context_message = ""
@@ -276,12 +301,52 @@ def _parse_transcript(path: str, start_line: int = 0) -> tuple[list[dict], int]:
 
 
 def cmd_collect():
+    """Stop hook: read stdin, hand off to a detached worker, return immediately.
+
+    The worker runs the (potentially slow) claude CLI extraction in a new
+    session so it survives this process exiting. Hook latency drops from
+    seconds to milliseconds. Falls back to inline execution if spawn fails.
+    """
+    import subprocess
+
     try:
-        data = json.load(sys.stdin)
-        transcript_path = (data.get("transcript_path") or "").strip()
-        session_id = (data.get("session_id") or "unknown").strip()
+        raw = sys.stdin.buffer.read()
+    except Exception:
+        raw = b""
+    if not raw:
+        return
+
+    try:
+        json.loads(raw)
     except Exception:
         return
+
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, __file__, "_collect_worker"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+        assert proc.stdin is not None
+        proc.stdin.write(raw)
+        proc.stdin.close()
+        return
+    except Exception:
+        pass
+
+    try:
+        _do_collect(json.loads(raw))
+    except Exception:
+        pass
+
+
+def _do_collect(data: dict):
+    transcript_path = (data.get("transcript_path") or "").strip()
+    session_id = (data.get("session_id") or "unknown").strip()
+    project = _project_path(data)
 
     if not transcript_path or not Path(transcript_path).exists():
         return
@@ -315,7 +380,7 @@ def cmd_collect():
             store = _get_store()
             for content, category in facts_to_store:
                 try:
-                    store.add_fact(content, category=category)
+                    store.add_fact(content, category=category, project_path=project)
                     saved += 1
                 except Exception:
                     pass
@@ -348,6 +413,11 @@ if __name__ == "__main__":
         cmd_inject()
     elif cmd == "collect":
         cmd_collect()
+    elif cmd == "_collect_worker":
+        try:
+            _do_collect(_read_hook_input())
+        except Exception:
+            pass
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)

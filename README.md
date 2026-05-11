@@ -12,11 +12,9 @@ Three Claude Code hooks:
 | `UserPromptSubmit` | Every message | Search memory, inject relevant facts as context |
 | `Stop` | After each response | Call `claude` CLI to extract memorable facts from the transcript |
 
-Facts are stored in SQLite with FTS5 full-text search and optional HRR vector embeddings (when numpy is available) for semantic retrieval. The `claude` CLI handles extraction — no API key configuration needed.
+Facts are stored in SQLite with FTS5 full-text search and HRR phase-vector embeddings for semantic retrieval. The `claude` CLI handles extraction — no API key configuration needed.
 
 ## Install
-
-### Via Claude Code plugin marketplace (recommended)
 
 Add to `~/.claude/settings.json`:
 
@@ -38,26 +36,18 @@ Then install in Claude Code:
 /install holographic-memory@holographic-memory
 ```
 
-### Manual install
-
-```bash
-git clone https://github.com/jes-bz/claude-holographic.git
-cd claude-holographic
-bash install.sh
-```
-
 ## Storage
 
 - **DB**: `~/.claude/holographic-memory/memory.db` (SQLite, WAL mode)
 - **Watermarks**: `~/.claude/holographic-memory/watermarks/` (tracks processed transcript lines per session)
-- **Plugin cache** (marketplace install): `~/.claude/plugins/cache/holographic-memory/`
+- **Plugin cache**: `~/.claude/plugins/cache/holographic-memory/`
 
 ## Retrieval
 
 Search uses a hybrid pipeline:
 1. **FTS5** — SQLite full-text search, fast keyword matching
 2. **Jaccard similarity** — token overlap reranking
-3. **HRR vectors** — phase-encoded semantic similarity (requires numpy, auto-installed by uv)
+3. **HRR vectors** — phase-encoded semantic similarity
 
 Facts have trust scores (0–1) that adjust with use. Higher-trust facts rank higher in retrieval.
 

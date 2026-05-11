@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS facts (
     helpful_count   INTEGER DEFAULT 0,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    hrr_vector      BLOB
+    hrr_vector      BLOB,
+    project_path    TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS entities (
@@ -62,16 +63,13 @@ CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
     INSERT INTO facts_fts(rowid, content, tags)
         VALUES (new.fact_id, new.content, new.tags);
 END;
-
-CREATE TABLE IF NOT EXISTS memory_banks (
-    bank_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    bank_name  TEXT NOT NULL UNIQUE,
-    vector     BLOB NOT NULL,
-    dim        INTEGER NOT NULL,
-    fact_count INTEGER DEFAULT 0,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
 """
+
+_SIMILARITY_DEDUP_THRESHOLD = 0.85
+_DEDUP_CANDIDATE_LIMIT = 20
+_DEDUP_FALLBACK_LIMIT = 200
+
+_RE_FTS_WORD = re.compile(r"\w+")
 
 _HELPFUL_DELTA   =  0.05
 _UNHELPFUL_DELTA = -0.10
@@ -89,6 +87,14 @@ _RE_AKA          = re.compile(
 
 def _clamp_trust(value: float) -> float:
     return max(_TRUST_MIN, min(_TRUST_MAX, value))
+
+
+def _fts_or_query(text: str) -> str:
+    """Build a safe FTS5 OR query from text words. Returns '' if nothing usable."""
+    words = {w.lower() for w in _RE_FTS_WORD.findall(text) if len(w) >= 3}
+    if not words:
+        return ""
+    return " OR ".join(sorted(words)[:32])
 
 
 class MemoryStore:
@@ -114,30 +120,56 @@ class MemoryStore:
         self._init_db()
 
     def _init_db(self) -> None:
-        try:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-        except Exception:
-            pass
-        self._conn.executescript(_SCHEMA)
-        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
-        if "hrr_vector" not in columns:
-            self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
-        self._conn.commit()
+        for pragma in (
+            "PRAGMA journal_mode=WAL",
+            "PRAGMA synchronous=NORMAL",
+            "PRAGMA temp_store=MEMORY",
+            "PRAGMA mmap_size=67108864",
+            "PRAGMA cache_size=-20000",
+        ):
+            try:
+                self._conn.execute(pragma)
+            except Exception:
+                pass
+        version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if version < 1:
+            self._conn.executescript(_SCHEMA)
+            self._conn.execute("PRAGMA user_version = 1")
+            self._conn.commit()
 
     def add_fact(
         self,
         content: str,
         category: str = "general",
         tags: str = "",
+        project_path: str = "",
     ) -> int:
         with self._lock:
             content = content.strip()
             if not content:
                 raise ValueError("content must not be empty")
+
+            existing_id = self._find_similar(content, category)
+            if existing_id is not None:
+                self._conn.execute(
+                    """
+                    UPDATE facts
+                    SET trust_score = MIN(?, trust_score + ?),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE fact_id = ?
+                    """,
+                    (_TRUST_MAX, _HELPFUL_DELTA, existing_id),
+                )
+                self._conn.commit()
+                return existing_id
+
             try:
                 cur = self._conn.execute(
-                    "INSERT INTO facts (content, category, tags, trust_score) VALUES (?, ?, ?, ?)",
-                    (content, category, tags, self.default_trust),
+                    """
+                    INSERT INTO facts (content, category, tags, trust_score, project_path)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (content, category, tags, self.default_trust, project_path),
                 )
                 self._conn.commit()
                 fact_id: int = cur.lastrowid  # type: ignore[assignment]
@@ -153,8 +185,46 @@ class MemoryStore:
             self._conn.commit()
 
             self._compute_hrr_vector(fact_id, content)
-            self._rebuild_bank(category)
             return fact_id
+
+    def _find_similar(self, content: str, category: str) -> int | None:
+        """HRR near-duplicate detector. Returns existing fact_id if sim > threshold.
+
+        FTS5 narrows candidates from full-category scan to top-N BM25 matches
+        before the O(N·dim) HRR comparison.
+        """
+        rows: list = []
+        fts_query = _fts_or_query(content)
+        if fts_query:
+            try:
+                rows = self._conn.execute(
+                    """
+                    SELECT f.fact_id, f.content
+                    FROM facts_fts fts
+                    JOIN facts f ON f.fact_id = fts.rowid
+                    WHERE facts_fts MATCH ? AND f.category = ?
+                    ORDER BY bm25(facts_fts) LIMIT ?
+                    """,
+                    (fts_query, category, _DEDUP_CANDIDATE_LIMIT),
+                ).fetchall()
+            except Exception:
+                rows = []
+        if not rows:
+            rows = self._conn.execute(
+                "SELECT fact_id, content FROM facts WHERE category = ? LIMIT ?",
+                (category, _DEDUP_FALLBACK_LIMIT),
+            ).fetchall()
+        if not rows:
+            return None
+        query_vec = hrr.encode_text(content, self.hrr_dim)
+        best_id, best_sim = None, _SIMILARITY_DEDUP_THRESHOLD
+        for row in rows:
+            fact_vec = hrr.encode_text(row["content"], self.hrr_dim)
+            sim = hrr.similarity(query_vec, fact_vec)
+            if sim > best_sim:
+                best_sim = sim
+                best_id = int(row["fact_id"])
+        return best_id
 
     def search_facts(
         self,
@@ -189,7 +259,7 @@ class MemoryStore:
                 rows = self._conn.execute(sql, params).fetchall()
             except Exception:
                 return []
-            results = [self._row_to_dict(r) for r in rows]
+            results = [dict(r) for r in rows]
             if results:
                 ids = [r["fact_id"] for r in results]
                 placeholders = ",".join("?" * len(ids))
@@ -210,7 +280,7 @@ class MemoryStore:
     ) -> bool:
         with self._lock:
             row = self._conn.execute(
-                "SELECT fact_id, trust_score, category FROM facts WHERE fact_id = ?", (fact_id,)
+                "SELECT fact_id, trust_score FROM facts WHERE fact_id = ?", (fact_id,)
             ).fetchone()
             if row is None:
                 return False
@@ -241,21 +311,14 @@ class MemoryStore:
                     self._link_fact_entity(fact_id, entity_id)
                 self._conn.commit()
                 self._compute_hrr_vector(fact_id, content)
-            self._rebuild_bank(category or row["category"])
             return True
 
     def remove_fact(self, fact_id: int) -> bool:
         with self._lock:
-            row = self._conn.execute(
-                "SELECT fact_id, category FROM facts WHERE fact_id = ?", (fact_id,)
-            ).fetchone()
-            if row is None:
-                return False
             self._conn.execute("DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,))
-            self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
+            cur = self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
             self._conn.commit()
-            self._rebuild_bank(row["category"])
-            return True
+            return cur.rowcount > 0
 
     def list_facts(
         self,
@@ -280,7 +343,7 @@ class MemoryStore:
                 LIMIT ?
             """
             rows = self._conn.execute(sql, params).fetchall()
-            return [self._row_to_dict(r) for r in rows]
+            return [dict(r) for r in rows]
 
     def record_feedback(self, fact_id: int, helpful: bool) -> dict:
         with self._lock:
@@ -319,6 +382,13 @@ class MemoryStore:
             "SELECT category, COUNT(*) as n FROM facts GROUP BY category ORDER BY n DESC LIMIT 5"
         ).fetchall()
         return count, [(row["category"], row["n"]) for row in cats]
+
+    def project_count(self, project_path: str) -> int:
+        """Count facts associated with a project path."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM facts WHERE project_path = ?", (project_path,)
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     def _extract_entities(self, text: str) -> list[str]:
         seen: set[str] = set()
@@ -380,49 +450,14 @@ class MemoryStore:
             )
             self._conn.commit()
 
-    def _rebuild_bank(self, category: str) -> None:
-        with self._lock:
-            bank_name = f"cat:{category}"
-            rows = self._conn.execute(
-                "SELECT hrr_vector FROM facts WHERE category = ? AND hrr_vector IS NOT NULL",
-                (category,),
-            ).fetchall()
-            if not rows:
-                self._conn.execute("DELETE FROM memory_banks WHERE bank_name = ?", (bank_name,))
-                self._conn.commit()
-                return
-            vectors = [hrr.bytes_to_phases(row["hrr_vector"]) for row in rows]
-            bank_vector = hrr.bundle(*vectors)
-            hrr.snr_estimate(self.hrr_dim, len(vectors))
-            self._conn.execute(
-                """
-                INSERT INTO memory_banks (bank_name, vector, dim, fact_count, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(bank_name) DO UPDATE SET
-                    vector = excluded.vector,
-                    dim = excluded.dim,
-                    fact_count = excluded.fact_count,
-                    updated_at = excluded.updated_at
-                """,
-                (bank_name, hrr.phases_to_bytes(bank_vector), self.hrr_dim, len(vectors)),
-            )
-            self._conn.commit()
-
     def rebuild_all_vectors(self, dim: int | None = None) -> int:
         with self._lock:
             if dim is not None:
                 self.hrr_dim = dim
-            rows = self._conn.execute("SELECT fact_id, content, category FROM facts").fetchall()
-            categories: set[str] = set()
+            rows = self._conn.execute("SELECT fact_id, content FROM facts").fetchall()
             for row in rows:
                 self._compute_hrr_vector(row["fact_id"], row["content"])
-                categories.add(row["category"])
-            for category in categories:
-                self._rebuild_bank(category)
             return len(rows)
-
-    def _row_to_dict(self, row: sqlite3.Row) -> dict:
-        return dict(row)
 
     def close(self) -> None:
         self._conn.close()
