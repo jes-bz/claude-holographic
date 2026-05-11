@@ -18,11 +18,11 @@ SELF_DIR = Path(__file__).parent
 sys.path.insert(0, str(SELF_DIR))
 
 DB_PATH = Path.home() / ".claude" / "holographic-memory" / "memory.db"
-WATERMARK_DIR = Path.home() / ".claude" / "holographic-memory" / "watermarks"
 
 
 def _get_store():
     from store import MemoryStore
+
     return MemoryStore(db_path=DB_PATH)
 
 
@@ -48,6 +48,7 @@ def _project_path(data: dict) -> str:
 # ---------------------------------------------------------------------------
 # startup — SessionStart hook
 # ---------------------------------------------------------------------------
+
 
 def cmd_startup():
     data = _read_hook_input()
@@ -85,6 +86,7 @@ def cmd_startup():
 # inject — UserPromptSubmit hook
 # ---------------------------------------------------------------------------
 
+
 def cmd_inject():
     if not DB_PATH.exists():
         return
@@ -98,13 +100,16 @@ def cmd_inject():
 
     try:
         from retrieval import FactRetriever
+
         store = _get_store()
     except Exception:
         return
 
     try:
         retriever = FactRetriever(store)
-        results = retriever.search(prompt, min_trust=0.3, limit=6, current_project=project)
+        results = retriever.search(
+            prompt, min_trust=0.3, limit=6, current_project=project
+        )
 
         n = len(results)
         context_message = ""
@@ -124,7 +129,7 @@ def cmd_inject():
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": context_message,
             },
-            "systemMessage": f"🧠 holographic: {n} {'memory' if n == 1 else 'memories'} recalled",
+            "systemMessage": f"🧠 {n} {'memory' if n == 1 else 'memories'} recalled",
         }
         json.dump(output, sys.stdout)
     finally:
@@ -146,16 +151,28 @@ Return a JSON array (only the array, no other text):
 
 Categories:
 - user_pref: preferences, tools, languages, style, corrections to Claude's behavior
-- project: tech stack, architecture decisions, project-specific context
+- project: tech stack, architecture decisions, project-specific context (durable, not "what happened today")
 - general: important facts about the user or their work that don't fit above
 
-Rules:
-- Only include facts a future Claude session should know
-- Write facts as complete, self-contained sentences
-- Skip conversational filler, greetings, questions with obvious answers
-- Skip facts derivable just by reading the codebase
-- Max 10 facts per session
-- Return [] if nothing is worth persisting\
+DO NOT extract (these are noise, not memory):
+- Activity logs / session summaries — "X was extracted", "Y was integrated", "Z was fixed", "we built/updated/refactored W".
+  Anything answering "what happened in this session" belongs in git log, not memory.
+- Status updates — "X is now complete", "Y now works", "Z has been added".
+- Meta-facts about the memory system itself — how the collector works, what hooks do, retention rules.
+- Restatements of things already obvious from the codebase or git history.
+- One-shot debugging fixes, error resolutions, or temporary workarounds tied to today's work.
+- Things the user said in passing that aren't standing preferences (e.g. "do X here" ≠ "always do X").
+
+DO extract:
+- Standing user preferences ("always use X", "never do Y", "I prefer Z").
+- Durable project facts that won't change next week (long-lived architecture, stack choices, why a decision was made).
+- Information about the user (role, expertise, responsibilities) useful across sessions.
+- Corrections the user explicitly framed as durable rules.
+
+Other rules:
+- Write facts as complete, self-contained sentences. A future Claude reading the fact in isolation must understand it.
+- Max 10 facts per session.
+- When in doubt, omit. Return [] if nothing is worth persisting.\
 """
 
 
@@ -191,7 +208,7 @@ def _extract_with_claude(messages: list[dict]) -> list[tuple[str, str]]:
         if result.returncode != 0:
             return []
         text = result.stdout.strip()
-        match = re.search(r'\[.*\]', text, re.DOTALL)
+        match = re.search(r"\[.*\]", text, re.DOTALL)
         if not match:
             return []
         facts = json.loads(match.group())
@@ -207,22 +224,67 @@ def _extract_with_claude(messages: list[dict]) -> list[tuple[str, str]]:
 # Regex fallback — used when claude CLI is unavailable
 _REGEX_RULES: dict[str, list[tuple[re.Pattern, str]]] = {
     "user": [
-        (re.compile(r'\bremember\s+(?:that\s+)?.{10,200}', re.I), "general"),
-        (re.compile(r'\bnote\s+(?:that\s+)?.{10,200}', re.I), "general"),
-        (re.compile(r'\bI(?:\'m| am)\s+(?:a|an)\s+\w.{5,80}', re.I), "user_pref"),
-        (re.compile(r'\bmy name is\s+\w.{2,40}', re.I), "user_pref"),
-        (re.compile(r'\bI work (?:at|for|with|on)\s+\w.{3,80}', re.I), "user_pref"),
-        (re.compile(r'\bI\s+(?:prefer|like|love|use|hate|always use|never use)\s+\w.{5,120}', re.I), "user_pref"),
-        (re.compile(r'\bI\s+(?:always|never|usually|typically)\s+\w.{5,100}', re.I), "user_pref"),
-        (re.compile(r'\bplease\s+(?:always|never|don\'t|do)\s+\w.{5,100}', re.I), "user_pref"),
-        (re.compile(r'\bwe\s+(?:decided|agreed|chose|are using|switched to|will use)\s+\w.{5,100}', re.I), "project"),
-        (re.compile(r'\bwe\'re\s+(?:using|building|working on|migrating to)\s+\w.{5,100}', re.I), "project"),
-        (re.compile(r'\bthis\s+(?:project|repo|app|service|codebase)\s+(?:uses?|needs?|is built with)\s+\w.{5,80}', re.I), "project"),
-        (re.compile(r'\bour\s+(?:stack|setup|architecture|framework)\s+(?:is|uses?)\s+\w.{5,80}', re.I), "project"),
-        (re.compile(r'\bdon\'t use\s+\w.{3,60}[,;]\s+(?:use|try)\s+\w.{3,60}', re.I), "user_pref"),
+        (re.compile(r"\bremember\s+(?:that\s+)?.{10,200}", re.I), "general"),
+        (re.compile(r"\bnote\s+(?:that\s+)?.{10,200}", re.I), "general"),
+        (re.compile(r"\bI(?:\'m| am)\s+(?:a|an)\s+\w.{5,80}", re.I), "user_pref"),
+        (re.compile(r"\bmy name is\s+\w.{2,40}", re.I), "user_pref"),
+        (re.compile(r"\bI work (?:at|for|with|on)\s+\w.{3,80}", re.I), "user_pref"),
+        (
+            re.compile(
+                r"\bI\s+(?:prefer|like|love|use|hate|always use|never use)\s+\w.{5,120}",
+                re.I,
+            ),
+            "user_pref",
+        ),
+        (
+            re.compile(r"\bI\s+(?:always|never|usually|typically)\s+\w.{5,100}", re.I),
+            "user_pref",
+        ),
+        (
+            re.compile(r"\bplease\s+(?:always|never|don\'t|do)\s+\w.{5,100}", re.I),
+            "user_pref",
+        ),
+        (
+            re.compile(
+                r"\bwe\s+(?:decided|agreed|chose|are using|switched to|will use)\s+\w.{5,100}",
+                re.I,
+            ),
+            "project",
+        ),
+        (
+            re.compile(
+                r"\bwe\'re\s+(?:using|building|working on|migrating to)\s+\w.{5,100}",
+                re.I,
+            ),
+            "project",
+        ),
+        (
+            re.compile(
+                r"\bthis\s+(?:project|repo|app|service|codebase)\s+(?:uses?|needs?|is built with)\s+\w.{5,80}",
+                re.I,
+            ),
+            "project",
+        ),
+        (
+            re.compile(
+                r"\bour\s+(?:stack|setup|architecture|framework)\s+(?:is|uses?)\s+\w.{5,80}",
+                re.I,
+            ),
+            "project",
+        ),
+        (
+            re.compile(r"\bdon\'t use\s+\w.{3,60}[,;]\s+(?:use|try)\s+\w.{3,60}", re.I),
+            "user_pref",
+        ),
     ],
     "assistant": [
-        (re.compile(r'\bI\'ll (?:remember|note|keep in mind)\s+(?:that\s+)?\w.{10,200}', re.I), "general"),
+        (
+            re.compile(
+                r"\bI\'ll (?:remember|note|keep in mind)\s+(?:that\s+)?\w.{10,200}",
+                re.I,
+            ),
+            "general",
+        ),
     ],
 }
 
@@ -272,17 +334,21 @@ def _parse_transcript(path: str, start_line: int = 0) -> tuple[list[dict], int]:
                         content = msg.get("content", "")
                         if isinstance(content, list):
                             content = " ".join(
-                                c.get("text", "") for c in content
+                                c.get("text", "")
+                                for c in content
                                 if isinstance(c, dict) and c.get("type") == "text"
                             )
                         if isinstance(content, str) and content.strip():
-                            messages.append({"role": "user", "content": content.strip()})
+                            messages.append(
+                                {"role": "user", "content": content.strip()}
+                            )
 
                     elif role == "assistant":
                         content_parts = msg.get("content", [])
                         if isinstance(content_parts, list):
                             text = " ".join(
-                                p.get("text", "") for p in content_parts
+                                p.get("text", "")
+                                for p in content_parts
                                 if isinstance(p, dict) and p.get("type") == "text"
                             )
                         elif isinstance(content_parts, str):
@@ -290,7 +356,9 @@ def _parse_transcript(path: str, start_line: int = 0) -> tuple[list[dict], int]:
                         else:
                             text = ""
                         if text.strip():
-                            messages.append({"role": "assistant", "content": text.strip()})
+                            messages.append(
+                                {"role": "assistant", "content": text.strip()}
+                            )
 
                 except (json.JSONDecodeError, KeyError, TypeError):
                     continue
@@ -301,7 +369,8 @@ def _parse_transcript(path: str, start_line: int = 0) -> tuple[list[dict], int]:
 
 
 def cmd_collect():
-    """Stop hook: read stdin, hand off to a detached worker, return immediately.
+    """SessionEnd / PreCompact hook: read stdin, hand off to a detached worker,
+    return immediately.
 
     The worker runs the (potentially slow) claude CLI extraction in a new
     session so it survives this process exiting. Hook latency drops from
@@ -344,31 +413,17 @@ def cmd_collect():
 
 
 def _do_collect(data: dict):
+    """Extract facts from the full transcript. Fires on SessionEnd and PreCompact
+    so the LLM sees complete context (not a per-turn delta). Dedup via HRR
+    similarity in store.add_fact handles overlap between the two events."""
     transcript_path = (data.get("transcript_path") or "").strip()
-    session_id = (data.get("session_id") or "unknown").strip()
     project = _project_path(data)
 
     if not transcript_path or not Path(transcript_path).exists():
         return
 
-    # Load watermark — only process new lines since last run
-    WATERMARK_DIR.mkdir(parents=True, exist_ok=True)
-    safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', session_id)[:64]
-    watermark_file = WATERMARK_DIR / f"{safe_id}.json"
-
-    start_line = 0
-    if watermark_file.exists():
-        try:
-            wm = json.loads(watermark_file.read_text())
-            start_line = int(wm.get("last_line", 0))
-        except Exception:
-            start_line = 0
-
-    messages, total_lines = _parse_transcript(transcript_path, start_line=start_line)
-
+    messages, _ = _parse_transcript(transcript_path, start_line=0)
     if not messages:
-        # Update watermark even if no messages (so we don't re-scan)
-        watermark_file.write_text(json.dumps({"last_line": total_lines}))
         return
 
     facts_to_store = _extract_with_claude(messages) or _extract_with_regex(messages)
@@ -391,13 +446,9 @@ def _do_collect(data: dict):
                 store.close()
 
     if saved:
-        print(f"💾 {saved} new {'fact' if saved == 1 else 'facts'} saved", file=sys.stderr)
-
-    # Update watermark
-    try:
-        watermark_file.write_text(json.dumps({"last_line": total_lines}))
-    except Exception:
-        pass
+        print(
+            f"💾 {saved} new {'fact' if saved == 1 else 'facts'} saved", file=sys.stderr
+        )
 
 
 # ---------------------------------------------------------------------------

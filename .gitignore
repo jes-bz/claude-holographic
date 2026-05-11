@@ -5,5 +5,10 @@ __pycache__/
 *.db-wal
 watermarks/
 .env
-.claude/settings.local.json
-.claude/worktrees/
+.claude/
+.venv/
+.pytest_cache/
+__pypackages__/
+.idea/
+.vscode/
+.DS_Store

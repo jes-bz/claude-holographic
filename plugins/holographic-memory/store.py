@@ -136,6 +136,10 @@ class MemoryStore:
             self._conn.executescript(_SCHEMA)
             self._conn.execute("PRAGMA user_version = 1")
             self._conn.commit()
+        cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(facts)")}
+        if "project_path" not in cols:
+            self._conn.execute("ALTER TABLE facts ADD COLUMN project_path TEXT DEFAULT ''")
+            self._conn.commit()
 
     def add_fact(
         self,

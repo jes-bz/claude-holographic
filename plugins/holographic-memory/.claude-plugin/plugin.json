@@ -1,6 +1,6 @@
 {
   "name": "holographic-memory",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Persistent cross-session memory using Holographic Reduced Representations (HRR) and SQLite.",
   "author": {
     "name": "Jesse Brizzi",

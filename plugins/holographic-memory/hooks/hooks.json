@@ -23,7 +23,18 @@
         ]
       }
     ],
-    "Stop": [
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/holo.py\" collect",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
       {
         "hooks": [
           {
